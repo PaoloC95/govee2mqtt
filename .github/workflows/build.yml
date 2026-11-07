@@ -31,7 +31,6 @@ env:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # only collapse rapid edge builds; never cancel a release
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 permissions:
@@ -41,12 +40,8 @@ jobs:
   init:
     runs-on: ubuntu-latest
     outputs:
-      # raw facts build.rs composes the embedded version from: release_tag on a
-      # release (v stripped), build_sha otherwise.
       release_tag: ${{ steps.version.outputs.release_tag }}
       build_sha: ${{ steps.version.outputs.build_sha }}
-      # tags, labels, annotations derived by docker/metadata-action; tags are
-      # full image:tag strings, annotations target the multiarch index
       daemon_tags: ${{ steps.daemon_meta.outputs.tags }}
       daemon_labels: ${{ steps.daemon_meta.outputs.labels }}
       daemon_annotations: ${{ steps.daemon_meta.outputs.annotations }}
@@ -62,7 +57,6 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           if [ "$EVENT" = "release" ]; then
-            # release.yml tags are v<semver>; build.rs wants the bare semver
             release_tag="${RELEASE_TAG#v}"
             build_sha=""
           else
@@ -97,10 +91,8 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=raw,value=edge,enable=${{ github.event_name != 'release' }}
+            type=raw,value=0.1.1,enable=${{ github.event_name == 'workflow_dispatch' }}
 
-  # each arch builds on its own native runner (no QEMU) and pushes an untagged
-  # image by digest; the manifest job below stitches the digests into one
-  # multiarch tag, so no per-arch images are published.
   daemon:
     needs: init
     runs-on: ${{ matrix.os }}
@@ -131,9 +123,6 @@ jobs:
           file: Dockerfile
           target: standalone
           platforms: ${{ matrix.platform }}
-          # BUILD_ARCH picks the rust musl target in the builder stage; it must
-          # match the build platform or the build cross-compiles and fails for
-          # want of the matching musl gcc toolchain
           build-args: |
             BUILD_ARCH=${{ matrix.arch }}
             GOVEE2MQTT_RELEASE_TAG=${{ needs.init.outputs.release_tag }}
@@ -160,7 +149,6 @@ jobs:
 
   daemon-manifest:
     needs: [init, daemon]
-    # PRs only validate the per-arch builds; nothing is pushed to stitch
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     permissions:
@@ -197,8 +185,6 @@ jobs:
           done
           docker buildx imagetools create "${args[@]}"
 
-  # the add-on is not built on PRs. runs after the daemon so the shared builder
-  # layers are warm in the gha cache.
   addon:
     if: ${{ github.event_name != 'pull_request' }}
     needs: [init, daemon]
@@ -235,7 +221,6 @@ jobs:
             GOVEE2MQTT_BUILD_SHA=${{ needs.init.outputs.build_sha }}
           labels: ${{ needs.init.outputs.addon_labels }}
           outputs: type=image,name=${{ env.ADDON_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          # the builder stage is identical to the daemon's, so read its cache too
           cache-from: |
             type=gha,scope=addon-${{ matrix.arch }}
             type=gha,scope=daemon-${{ matrix.arch }}
