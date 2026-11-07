@@ -52,6 +52,14 @@ fn govee_api_status(body: &[u8]) -> Option<GoveeApiStatus> {
     serde_json::from_slice(body).ok()
 }
 
+/// Govee sometimes returns application errors (including 401) inside an HTTP
+/// 200 response. Check both layers before attempting to decode the payload.
+fn is_unauthorized_response(http_status: reqwest::StatusCode, body: &[u8]) -> bool {
+    http_status == reqwest::StatusCode::UNAUTHORIZED
+        || govee_api_status(body)
+            .is_some_and(|status| status.status == reqwest::StatusCode::UNAUTHORIZED.as_u16() as u64)
+}
+
 fn epoch_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -848,27 +856,66 @@ impl GoveeUndocumentedApi {
                 allow_stale: true,
             },
             async {
-                let response = self
-                    .app_request(
-                        Method::GET,
-                        "https://app2.govee.com/bff-app/v1/exec-plat/home",
-                        Some(community_token),
-                    )
-                    .timeout(Duration::from_secs(10))
-                    .send()
-                    .await
-                    .map_err(network("one-click shortcuts"))?;
+                const URL: &str = "https://app2.govee.com/bff-app/v1/exec-plat/home";
+                let mut token = community_token.to_string();
 
-                if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-                    self.invalidate_community_login();
-                    return Err(GoveeApiError::Auth(
-                        "one-click shortcuts rejected the community token".into(),
-                    ));
+                // Govee may signal an expired token in the JSON body while the
+                // HTTP response itself is 200. Detect both forms, refresh once,
+                // and retry the same request without creating a retry loop.
+                for attempt in 0..=1 {
+                    let response = self
+                        .app_request(Method::GET, URL, Some(&token))
+                        .timeout(Duration::from_secs(10))
+                        .send()
+                        .await
+                        .map_err(network("one-click shortcuts"))?;
+
+                    let http_status = response.status();
+                    let body = response
+                        .bytes()
+                        .await
+                        .map_err(network("reading one-click shortcuts response"))?;
+
+                    if is_unauthorized_response(http_status, &body) {
+                        self.invalidate_community_login();
+
+                        if attempt == 0 {
+                            token = self.login_community().await?;
+                            continue;
+                        }
+
+                        return Err(GoveeApiError::Auth(
+                            "one-click shortcuts rejected the community token after refresh"
+                                .into(),
+                        ));
+                    }
+
+                    if !http_status.is_success() {
+                        return Err(GoveeApiError::Api(format!(
+                            "request {URL} status {} {}. Response body: {}",
+                            http_status.as_u16(),
+                            http_status.canonical_reason().unwrap_or(""),
+                            String::from_utf8_lossy(&body),
+                        )));
+                    }
+
+                    if let Some(api_status) = govee_api_status(&body)
+                        && api_status.status != reqwest::StatusCode::OK.as_u16() as u64
+                    {
+                        return Err(GoveeApiError::Api(format!(
+                            "request to {URL} failed with status={} {}. Full response: {}",
+                            api_status.status,
+                            api_status.message,
+                            String::from_utf8_lossy(&body),
+                        )));
+                    }
+
+                    let resp: OneClickResponse =
+                        crate::http::from_json(&body)?;
+                    return Ok(CacheComputeResult::Value(resp.data.components));
                 }
 
-                let resp: OneClickResponse = http_response_body(response).await?;
-
-                Ok(CacheComputeResult::Value(resp.data.components))
+                unreachable!("one-click shortcut retry loop always returns or continues once")
             },
         )
         .await
