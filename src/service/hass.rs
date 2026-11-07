@@ -139,43 +139,28 @@ impl HassClient {
         let enumeration = enumerate_all_entites(state).await?;
         let entities = &enumeration.entities;
 
-        // Only publish discovery on a complete pass. Under device discovery a
-        // device's entities share one config topic, so republishing that topic
-        // from a partial enumeration (eg: the undoc one-click API failed, so the
-        // scenes that share the service device's topic are missing) would drop
-        // the missing entities from home assistant. A partial pass leaves the
-        // retained device configs untouched and carries the previous map
-        // forward; the next complete pass reconciles. State and availability are
-        // still refreshed below.
-        let device_count = if enumeration.complete {
-            // A device that is still present but dropped a component gets that
-            // component tombstoned in its republished payload (handled inside
-            // publish_config). The returned map is what we produced this pass.
-            log::trace!("register_with_hass: register entities");
-            let published = entities.publish_config(state, self, &previous).await?;
+        // A failed One-Click lookup only makes the service-device scene list
+        // incomplete. Publish real-device entities regardless, while preserving
+        // the service device's retained config so existing scenes are not lost.
+        log::trace!("register_with_hass: register entities");
+        let topics = state.topics().await;
+        let service_id = topics.service_id();
+        let preserve_device_id = (!enumeration.complete).then_some(service_id.as_str());
+        let published = entities
+            .publish_config(state, self, &previous, preserve_device_id)
+            .await?;
 
-            // Remove any device we published before but no longer produce at
-            // all. Empty retained payload to its device topic is home
-            // assistant's signal to drop the whole device.
-            for topic in previous.keys() {
-                if !published.contains_key(topic) {
-                    log::info!("Removing stale device discovery {topic}");
-                    self.remove_config(topic)
-                        .await
-                        .with_context(|| format!("remove stale config {topic}"))?;
-                }
+        // Remove devices no longer produced by the current device inventory.
+        for topic in previous.keys() {
+            if !published.contains_key(topic) {
+                log::info!("Removing stale device discovery {topic}");
+                self.remove_config(topic)
+                    .await
+                    .with_context(|| format!("remove stale config {topic}"))?;
             }
-            let count = published.len();
-            state.set_published_components(published).await;
-            count
-        } else {
-            log::info!(
-                "Enumeration was incomplete; leaving discovery configs untouched to avoid removing entities that still exist"
-            );
-            let count = previous.len();
-            state.set_published_components(previous).await;
-            count
-        };
+        }
+        let device_count = published.len();
+        state.set_published_components(published).await;
 
         // No settle delay before publishing availability/state. Availability is
         // retained, so hass reads it whenever it processes the config, ordering
