@@ -26,8 +26,8 @@ on:
       - ".github/workflows/build.yml"
 
 env:
-  DAEMON_IMAGE: ghcr.io/${{ github.repository_owner }}/govee2mqtt
-  ADDON_IMAGE: ghcr.io/${{ github.repository_owner }}/govee2mqtt-addon
+  DAEMON_IMAGE: ghcr.io/paoloc95/govee2mqtt
+  ADDON_IMAGE: ghcr.io/paoloc95/govee2mqtt-addon
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
