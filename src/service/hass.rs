@@ -924,6 +924,8 @@ pub async fn spawn_hass_integration(
         mqtt_port,
     );
     mqtt_options.set_keep_alive(Duration::from_secs(120));
+    // Allow larger Home Assistant device-discovery payloads.
+    mqtt_options.set_max_packet_size(100_000, 100_000);
     // Retained so a hass that subscribes after we have already disconnected
     // still sees us as offline, matching the retained "online" we publish on
     // registration.
