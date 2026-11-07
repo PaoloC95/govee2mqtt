@@ -94,6 +94,7 @@ impl EntityList {
         state: &StateHandle,
         client: &HassClient,
         previous: &PublishedComponents,
+        preserve_device_id: Option<&str>,
     ) -> anyhow::Result<PublishedComponents> {
         let disco = state.get_hass_disco_prefix().await;
 
@@ -119,6 +120,16 @@ impl EntityList {
         for object_id in order {
             let mut group = groups.remove(&object_id).expect("group exists");
             let topic = format!("{disco}/device/{object_id}/config");
+
+            // When scene enumeration fails, keep the service device's retained
+            // config untouched (its scene components are temporarily absent),
+            // while still publishing every real device discovered this pass.
+            if preserve_device_id == Some(object_id.as_str()) {
+                if let Some(prev) = previous.get(&topic) {
+                    published.insert(topic, prev.clone());
+                }
+                continue;
+            }
 
             // Record what we're actually producing for this device, before
             // tombstones are mixed in, so the next pass diffs against the live
