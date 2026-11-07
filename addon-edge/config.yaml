@@ -39,6 +39,7 @@ schema:
   availability_timeout: "int?"
   govee_email: "str?"
   govee_password: "password?"
+  govee_2fa_code: "password?"
   govee_api_key: "password?"
   mqtt_host: "str?"
   mqtt_port: "int?"

@@ -77,6 +77,11 @@ if bashio::config.has_value govee_password ; then
   export GOVEE2MQTT_PASSWORD
 fi
 
+if bashio::config.has_value govee_2fa_code ; then
+  GOVEE2MQTT_2FA_CODE="$(bashio::config govee_2fa_code)"
+  export GOVEE2MQTT_2FA_CODE
+fi
+
 if bashio::config.has_value govee_api_key ; then
   GOVEE2MQTT_API_KEY="$(bashio::config govee_api_key)"
   export GOVEE2MQTT_API_KEY
@@ -120,7 +125,7 @@ fi
 # log the resolved config with secrets redacted. this is diagnostic only, so it
 # must not abort startup: grep exits non-zero when nothing matches, and the
 # script runs under bashio's set -e, so swallow that.
-env | grep GOVEE2MQTT_ | sed -r 's/_(EMAIL|KEY|PASSWORD)=.*/_\1=REDACTED/' || true
+env | grep GOVEE2MQTT_ | sed -r 's/_(EMAIL|KEY|PASSWORD|2FA_CODE)=.*/_\1=REDACTED/' || true
 
 cd /app || bashio::exit.nok "could not cd to /app"
 exec /app/govee2mqtt serve
