@@ -539,9 +539,10 @@ impl GoveeUndocumentedApi {
         Ok(envelope.data)
     }
 
-    pub fn invalidate_community_login(&self) {
-        // best-effort: a failed invalidation just means the next call recomputes
-        crate::cache::invalidate_key("undoc-api", "community-login").ok();
+    pub fn invalidate_community_login(&self) -> ApiResult<()> {
+        // Do not silently ignore this: a failed cache invalidation would make
+        // the subsequent "refresh" return the same rejected token.
+        crate::cache::invalidate_key("undoc-api", "community-login")
     }
 
     /// Login to community-api.govee.com and return the bearer token
@@ -593,6 +594,14 @@ impl GoveeUndocumentedApi {
 
                 let ttl_ms = (resp.data.expiredAt as u128).saturating_sub(epoch_millis());
                 let ttl = Duration::from_millis(ttl_ms as u64).min(ONE_DAY);
+
+                // Never log the token itself. Length and expiry are enough to
+                // confirm that the login endpoint returned a usable response.
+                log::info!(
+                    "Community login succeeded; token length={}, expires_in={}s",
+                    resp.data.token.len(),
+                    ttl.as_secs()
+                );
 
                 Ok(CacheComputeResult::WithTtl(resp.data.token, ttl))
             },
@@ -877,10 +886,30 @@ impl GoveeUndocumentedApi {
                         .map_err(network("reading one-click shortcuts response"))?;
 
                     if is_unauthorized_response(http_status, &body) {
-                        self.invalidate_community_login();
+                        let api_status = govee_api_status(&body);
+                        let message = api_status
+                            .as_ref()
+                            .map(|status| status.message.as_str())
+                            .unwrap_or("no application-level error message");
+                        log::warn!(
+                            "One-click request rejected authentication: HTTP {}, API status {:?}, message: {}",
+                            http_status.as_u16(),
+                            api_status.as_ref().map(|status| status.status),
+                            message
+                        );
+
+                        // Propagate invalidation errors. Otherwise the next
+                        // login could silently return the same cached token.
+                        self.invalidate_community_login()?;
 
                         if attempt == 0 {
-                            token = self.login_community().await?;
+                            let rejected_token = token.clone();
+                            let refreshed_token = self.login_community().await?;
+                            log::info!(
+                                "Community token refresh completed; returned token differs from rejected token: {}",
+                                refreshed_token != rejected_token
+                            );
+                            token = refreshed_token;
                             continue;
                         }
 
