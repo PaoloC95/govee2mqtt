@@ -3,7 +3,7 @@ image: ghcr.io/paoloc95/govee2mqtt-addon
 version: "edge"
 slug: govee2mqtt_edge
 description: Control Govee Devices
-url: https://github.com/tetra-fox/govee2mqtt
+url: https://github.com/PaoloC95/govee2mqtt
 arch:
   - amd64
   - aarch64
