@@ -366,7 +366,10 @@ async fn mqtt_request_platform_data(
 #[derive(Deserialize, Debug, Clone)]
 struct HassLightCommand {
     state: String,
+    // Home Assistant may send color_temp in mireds (legacy MQTT light schema)
+    // or color_temp_kelvin in kelvin. Accept both wire formats.
     color_temp_kelvin: Option<u32>,
+    color_temp: Option<u32>,
     color: Option<DeviceColor>,
     effect: Option<String>,
     brightness: Option<u8>,
@@ -427,7 +430,15 @@ async fn mqtt_light_command(
                 .context("mqtt_light_command: state.device_set_color_rgb")?;
             power_on = false;
         }
-        if let Some(kelvin) = command.color_temp_kelvin {
+        // HA's MQTT light command payload uses mireds for color_temp,
+        // while Govee's device-control API expects kelvin.
+        let color_temp_kelvin = command.color_temp_kelvin.or_else(|| {
+            command
+                .color_temp
+                .filter(|mired| *mired > 0)
+                .map(|mired| 1_000_000 / mired)
+        });
+        if let Some(kelvin) = color_temp_kelvin {
             state
                 .device_set_color_temperature(&device, kelvin)
                 .await
