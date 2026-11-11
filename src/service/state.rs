@@ -827,6 +827,14 @@ impl State {
         device: &Device,
         kelvin: u32,
     ) -> anyhow::Result<()> {
+        // Keep the command inside this device's own advertised range. The
+        // same range is used by MQTT discovery, so the HA slider and the
+        // physical command cannot disagree.
+        let kelvin = device
+            .get_color_temperature_range()
+            .map(|(min, max)| kelvin.clamp(min, max))
+            .unwrap_or(kelvin);
+
         self.run_command(
             &device.id,
             "set_color_temperature",
