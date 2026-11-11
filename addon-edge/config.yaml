@@ -1,6 +1,6 @@
 name: Govee2MQTT Edge
 image: ghcr.io/paoloc95/govee2mqtt-addon
-version: "0.1.4"
+version: "0.1.5"
 slug: govee2mqtt_edge
 description: Control Govee Devices
 url: https://github.com/PaoloC95/govee2mqtt
