@@ -91,7 +91,7 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=raw,value=edge,enable=${{ github.event_name != 'release' }}
-            type=raw,value=0.1.4,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=0.1.5,enable=${{ github.event_name == 'workflow_dispatch' }}
 
   daemon:
     needs: init
