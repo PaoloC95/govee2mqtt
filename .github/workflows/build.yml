@@ -5,7 +5,7 @@ on:
   release:
     types: [published]
   push:
-    branches: [main]
+    branches: [main, fix/govee-2fa]
     paths:
       - "**/*.rs"
       - "**/Cargo.*"
