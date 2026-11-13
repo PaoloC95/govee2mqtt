@@ -33,9 +33,11 @@ map:
 
 options:
   temperature_scale: "C"
+  disable_one_click: true
 
 schema:
   temperature_scale: "str?"
+  disable_one_click: "bool?"
   availability_timeout: "int?"
   govee_email: "str?"
   govee_password: "password?"
