@@ -725,16 +725,16 @@ impl Device {
 
     /// Pick the best state from whichever sources we have.
     ///
-    /// Within a freshness window we prefer the real-time sources (LAN > IoT)
-    /// over the platform HTTP poll. The platform API lags a real-world state
-    /// change by 30-60s (Govee cloud sync), so a platform poll that arrives a
-    /// few seconds after a fresh IoT push usually carries pre-change state.
-    /// Last-write-wins on raw timestamp would let that stale poll roll the UI
-    /// back, which is exactly the visible flap we're trying to avoid.
+    /// A successful LAN status response is the strongest signal that the
+    /// device is reachable locally. Keep preferring that state for the full
+    /// availability window (the same window used to decide when a device has
+    /// gone silent), rather than the shorter generic freshness window. This
+    /// prevents a newer cloud/IoT update from overriding a still-valid LAN
+    /// state merely because LAN has not needed another poll yet.
     ///
-    /// Outside the freshness window the polling sources are the only thing we
-    /// have, so fall back to the most-recent across all sources rather than
-    /// returning None.
+    /// When LAN has gone silent beyond the availability window, prefer fresh
+    /// IoT and then the platform HTTP poll. Outside those windows, use the
+    /// most recent state rather than returning None.
     pub fn device_state(&self) -> Option<DeviceState> {
         const FRESHNESS_SECS: i64 = 60;
 
@@ -743,25 +743,28 @@ impl Device {
         let http = self.compute_http_device_state();
 
         let now = Utc::now();
-        let is_fresh = |s: &DeviceState| (now - s.updated).num_seconds() < FRESHNESS_SECS;
+        let is_fresh = |s: &DeviceState, window_secs: i64| {
+            (now - s.updated).num_seconds() < window_secs
+        };
+        let lan_freshness_secs = availability_timeout().num_seconds();
 
         if let Some(s) = &lan
-            && is_fresh(s)
+            && is_fresh(s, lan_freshness_secs)
         {
             return lan;
         }
         if let Some(s) = &iot
-            && is_fresh(s)
+            && is_fresh(s, FRESHNESS_SECS)
         {
             return iot;
         }
         if let Some(s) = &http
-            && is_fresh(s)
+            && is_fresh(s, FRESHNESS_SECS)
         {
             return http;
         }
 
-        [lan, http, iot]
+        [lan, iot, http]
             .into_iter()
             .flatten()
             .max_by_key(|s| s.updated)
