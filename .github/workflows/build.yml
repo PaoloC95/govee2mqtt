@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'push' }}
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   init:
@@ -52,6 +52,27 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Automatically bump add-on patch version
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version: "\(.*\)"/\1/p' addon-edge/config.yaml)"
+          if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Invalid add-on version: $version" >&2
+            exit 1
+          fi
+
+          IFS='.' read -r major minor patch <<< "$version"
+          next_version="$major.$minor.$((patch + 1))"
+          sed -i "s/^version: \"$version\"$/version: \"$next_version\"/" addon-edge/config.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add addon-edge/config.yaml
+          git commit -m "chore: bump add-on version to $next_version"
+          git push origin "HEAD:$BRANCH"
 
       - name: Read add-on version
         id: addon_version
@@ -105,7 +126,7 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=raw,value=edge,enable=${{ github.event_name != 'release' }}
-            type=raw,value=${{ steps.addon_version.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.addon_version.outputs.version }},enable=${{ github.event_name != 'release' }}
 
   daemon:
     needs: init
