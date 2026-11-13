@@ -136,10 +136,12 @@ async fn poll_single_device(state: &StateHandle, device: &Device) -> anyhow::Res
     // lights to flicker about a minute after polling, so it
     // is desirable to keep polling on a regular basis.
     // <https://github.com/wez/govee2mqtt/issues/250>
+    let mut lan_responded = false;
     if let Some(lan_device) = &device.lan_device
         && let Some(client) = state.get_lan_client().await
         && let Ok(status) = client.query_status(lan_device).await
     {
+        lan_responded = true;
         state
             .device_mut(&lan_device.sku, &lan_device.device)
             .await
@@ -183,7 +185,10 @@ async fn poll_single_device(state: &StateHandle, device: &Device) -> anyhow::Res
     // If we have LAN and the device is stale, it is likely
     // offline and there is little sense in burning up request
     // quota to the platform API for it
-    if device.lan_device.is_some() && !needs_platform && !device.lan_fallback_expired() {
+    if device.lan_device.is_some()
+        && !needs_platform
+        && (!device.lan_fallback_expired() || lan_responded)
+    {
         log::trace!("LAN-available device {device} needs a status update; it's likely offline.");
         return Ok(());
     }
