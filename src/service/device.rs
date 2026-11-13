@@ -57,6 +57,8 @@ pub struct Device {
     /// or explicit probing by IP address
     pub lan_device: Option<LanDevice>,
     pub last_lan_device_update: Option<DateTime<Utc>>,
+    /// First time this device was discovered over LAN; stable across repeated advertisements.
+    pub lan_first_seen_at: Option<DateTime<Utc>>,
 
     pub lan_device_status: Option<LanDeviceStatus>,
     pub last_lan_device_status_update: Option<DateTime<Utc>>,
@@ -480,7 +482,9 @@ impl Device {
     /// Update the LAN device information
     pub fn set_lan_device(&mut self, device: LanDevice) {
         self.lan_device.replace(device);
-        self.last_lan_device_update.replace(Utc::now());
+        let now = Utc::now();
+        self.last_lan_device_update.replace(now);
+        self.lan_first_seen_at.get_or_insert(now);
     }
 
     /// Update the LAN device status information
@@ -1132,7 +1136,7 @@ impl Device {
             return false;
         }
 
-        self.last_lan_device_update
+        self.lan_first_seen_at
             .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout())
     }
 
