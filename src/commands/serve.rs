@@ -29,6 +29,17 @@ pub static POLL_INTERVAL: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration
 
 pub const DEFAULT_AVAILABILITY_TIMEOUT_SECS: i64 = 300;
 
+/// Give LAN discovery this long to obtain its first valid status response
+/// before cloud transports are allowed to take over.
+pub const DEFAULT_LAN_FALLBACK_TIMEOUT_SECS: i64 = 60;
+static LAN_FALLBACK_TIMEOUT: OnceCell<chrono::Duration> = OnceCell::new();
+
+pub fn lan_fallback_timeout() -> chrono::Duration {
+    *LAN_FALLBACK_TIMEOUT
+        .get()
+        .unwrap_or(&chrono::Duration::seconds(DEFAULT_LAN_FALLBACK_TIMEOUT_SECS))
+}
+
 /// How long a device may go without us hearing from it before we treat it as
 /// offline. The Govee cloud marks an unreachable device offline within about a
 /// minute (measured by unplugging an H6093 and polling the platform online
@@ -125,10 +136,12 @@ async fn poll_single_device(state: &StateHandle, device: &Device) -> anyhow::Res
     // lights to flicker about a minute after polling, so it
     // is desirable to keep polling on a regular basis.
     // <https://github.com/wez/govee2mqtt/issues/250>
+    let mut lan_responded = false;
     if let Some(lan_device) = &device.lan_device
         && let Some(client) = state.get_lan_client().await
         && let Ok(status) = client.query_status(lan_device).await
     {
+        lan_responded = true;
         state
             .device_mut(&lan_device.sku, &lan_device.device)
             .await
@@ -172,7 +185,10 @@ async fn poll_single_device(state: &StateHandle, device: &Device) -> anyhow::Res
     // If we have LAN and the device is stale, it is likely
     // offline and there is little sense in burning up request
     // quota to the platform API for it
-    if device.lan_device.is_some() && !needs_platform {
+    if device.lan_device.is_some()
+        && !needs_platform
+        && (!device.lan_fallback_expired() || lan_responded)
+    {
         log::trace!("LAN-available device {device} needs a status update; it's likely offline.");
         return Ok(());
     }
@@ -416,6 +432,16 @@ impl ServeCommand {
             .set(chrono::Duration::seconds(timeout_secs))
             .ok();
         log::info!("Device availability timeout: {timeout_secs}s");
+
+        let lan_fallback_secs = govee_api::opt_env_var("GOVEE2MQTT_LAN_FALLBACK_TIMEOUT")?
+            .unwrap_or(DEFAULT_LAN_FALLBACK_TIMEOUT_SECS);
+        if lan_fallback_secs < 1 {
+            anyhow::bail!("lan-fallback-timeout must be at least 1 second, got {lan_fallback_secs}");
+        }
+        LAN_FALLBACK_TIMEOUT
+            .set(chrono::Duration::seconds(lan_fallback_secs))
+            .ok();
+        log::info!("LAN initial-response fallback timeout: {lan_fallback_secs}s");
 
         let state = Arc::new(crate::service::state::State::new());
 

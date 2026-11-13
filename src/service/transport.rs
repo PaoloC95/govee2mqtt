@@ -37,9 +37,12 @@ pub(crate) async fn power_on_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} power state");
-        lan_dev.send_turn(on).await?;
-        poll_lan_api(state, lan_dev, |status| status.on == on).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_turn(on).await {
+            log::warn!("LAN power command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.on == on).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)
@@ -177,9 +180,12 @@ pub(crate) async fn light_power_on_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} light power state");
-        lan_dev.send_turn(on).await?;
-        poll_lan_api(state, lan_dev, |status| status.on == on).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_turn(on).await {
+            log::warn!("LAN light-power command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.on == on).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -214,9 +220,12 @@ pub(crate) async fn set_brightness_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} brightness");
-        lan_dev.send_brightness(percent).await?;
-        poll_lan_api(state, lan_dev, |status| status.brightness == percent).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_brightness(percent).await {
+            log::warn!("LAN brightness command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.brightness == percent).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)
@@ -256,16 +265,19 @@ pub(crate) async fn set_color_temperature_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} color temperature");
-        lan_dev.send_color_temperature_kelvin(kelvin).await?;
-        poll_lan_api(state, lan_dev, |status| {
-            status.color_temperature_kelvin == kelvin
-        })
-        .await?;
-        state
-            .device_mut(&device.sku, &device.id)
-            .await
-            .set_active_scene(None);
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_color_temperature_kelvin(kelvin).await {
+            log::warn!("LAN color-temperature command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| {
+                status.color_temperature_kelvin == kelvin
+            })
+            .await?;
+            state
+                .device_mut(&device.sku, &device.id)
+                .await
+                .set_active_scene(None);
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -306,13 +318,16 @@ pub(crate) async fn set_color_rgb_generic(
     {
         let color = govee_api::lan_api::DeviceColor { r, g, b };
         log::debug!("Using LAN API to set {device} color");
-        lan_dev.send_color_rgb(color).await?;
-        poll_lan_api(state, lan_dev, |status| status.color == color).await?;
-        state
-            .device_mut(&device.sku, &device.id)
-            .await
-            .set_active_scene(None);
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_color_rgb(color).await {
+            log::warn!("LAN color command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.color == color).await?;
+            state
+                .device_mut(&device.sku, &device.id)
+                .await
+                .set_active_scene(None);
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -569,11 +584,11 @@ pub(crate) async fn try_frame_capability(
 /// Send already-encoded base64 ptReal frames over the device's best transport,
 /// returning the wire that carried them. LAN first when the device is on the
 /// LAN: the LAN and IoT ptReal payloads carry identical base64 BLE frames, so
-/// this is a pure transport choice. LAN is fire-and-forget UDP with no ack, so
-/// there is no delivery failure to fall back from; a present lan_device commits
-/// us to LAN. Otherwise direct BLE when a BLE client and address are available:
-/// the same frame bytes, written to the GATT char with no ptReal wrapper. IoT
-/// on any BLE failure or when BLE is unavailable.
+/// this is a pure transport choice. LAN is fire-and-forget UDP with no device
+/// acknowledgement; only a local send error is safe to fall through from.
+/// Otherwise direct BLE when a BLE client and address are available: the same
+/// frame bytes, written to the GATT char with no ptReal wrapper. IoT on any BLE
+/// failure or when BLE is unavailable.
 async fn send_frames(
     state: &StateHandle,
     device: &Device,
@@ -585,8 +600,10 @@ async fn send_frames(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to send a ptReal frame to {device}");
-        lan_dev.send_real(frames).await?;
-        return Ok(Transport::Lan);
+        match lan_dev.send_real(frames.clone()).await {
+            Ok(()) => return Ok(Transport::Lan),
+            Err(err) => log::warn!("LAN frame could not be sent to {device} ({err:#}); trying the next transport"),
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)

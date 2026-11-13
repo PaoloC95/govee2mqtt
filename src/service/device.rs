@@ -1,4 +1,4 @@
-use crate::commands::serve::{POLL_INTERVAL, availability_timeout};
+use crate::commands::serve::{POLL_INTERVAL, availability_timeout, lan_fallback_timeout};
 use crate::service::quirks::{BULB, Quirk, resolve_quirk};
 use crate::service::state::{ClientAvail, Transport};
 use chrono::{DateTime, Utc};
@@ -57,6 +57,8 @@ pub struct Device {
     /// or explicit probing by IP address
     pub lan_device: Option<LanDevice>,
     pub last_lan_device_update: Option<DateTime<Utc>>,
+    /// First time this device was discovered over LAN; stable across repeated advertisements.
+    pub lan_first_seen_at: Option<DateTime<Utc>>,
 
     pub lan_device_status: Option<LanDeviceStatus>,
     pub last_lan_device_status_update: Option<DateTime<Utc>>,
@@ -480,7 +482,9 @@ impl Device {
     /// Update the LAN device information
     pub fn set_lan_device(&mut self, device: LanDevice) {
         self.lan_device.replace(device);
-        self.last_lan_device_update.replace(Utc::now());
+        let now = Utc::now();
+        self.last_lan_device_update.replace(now);
+        self.lan_first_seen_at.get_or_insert(now);
     }
 
     /// Update the LAN device status information
@@ -1110,22 +1114,39 @@ impl Device {
         false
     }
 
+    /// Whether LAN has failed to establish or maintain a usable status path.
+    /// Before the first successful response, use the shorter startup grace
+    /// period. After LAN has worked once, keep it preferred for the existing
+    /// availability window and only then allow cloud transports to take over.
+    pub fn lan_fallback_expired(&self) -> bool {
+        if self.lan_device.is_none() {
+            return false;
+        }
+
+        match self.last_lan_device_status_update.as_ref() {
+            Some(last_response) => Utc::now() - last_response >= availability_timeout(),
+            None => self
+                .lan_first_seen_at
+                .as_ref()
+                .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout()),
+        }
+    }
+
     /// Whether a transport can currently carry a command to this device, from
     /// the device's facts and the sampled client availability. This is the one
     /// definition of "is transport T usable"; the control cascade gates each
-    /// step on it, and the debug `effective_transports` display reads it, so the
-    /// two can't drift. LAN sends go over the device's own UDP socket (no shared
-    /// client), so it only needs `lan_device`; the rest need their client up.
-    ///
+    /// step on it, and the debug effective_transports display reads it, so the
+    /// two can't drift. LAN requires a recent valid status response; the other
+    /// transports require their client to be up.
     /// BLE needs an address, an adapter, AND a family that actually has codecs
     /// for the SKU -- a bare address with no codecs (e.g. an unpinned H5083) is
-    /// not controllable. IoT needs `iot_api_supported`, the quirk flag every
-    /// socket and IoT-driven device sets. `avoid_platform_api` is not checked
+    /// not controllable. IoT needs iot_api_supported, the quirk flag every
+    /// socket and IoT-driven device sets. avoid_platform_api is not checked
     /// here: the generic verbs use the platform API regardless of it, and only
     /// the scene verb treats it as a routing preference.
     pub fn transport_reachable(&self, transport: Transport, avail: &ClientAvail) -> bool {
         match transport {
-            Transport::Lan => self.lan_device.is_some(),
+            Transport::Lan => self.lan_device.is_some() && !self.lan_fallback_expired(),
             Transport::Ble => {
                 avail.ble
                     && self.ble_address().is_some()

@@ -122,6 +122,11 @@ if bashio::config.has_value availability_timeout ; then
   export GOVEE2MQTT_AVAILABILITY_TIMEOUT
 fi
 
+if bashio::config.has_value lan_fallback_timeout ; then
+  GOVEE2MQTT_LAN_FALLBACK_TIMEOUT="$(bashio::config lan_fallback_timeout)"
+  export GOVEE2MQTT_LAN_FALLBACK_TIMEOUT
+fi
+
 if bashio::config.has_value disable_one_click ; then
   GOVEE2MQTT_DISABLE_ONE_CLICK="$(bashio::config disable_one_click)"
   export GOVEE2MQTT_DISABLE_ONE_CLICK

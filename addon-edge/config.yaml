@@ -34,10 +34,12 @@ map:
 options:
   temperature_scale: "C"
   disable_one_click: true
+  lan_fallback_timeout: 60
 
 schema:
   temperature_scale: "str?"
   disable_one_click: "bool?"
+  lan_fallback_timeout: "int?"
   availability_timeout: "int?"
   govee_email: "str?"
   govee_password: "password?"
