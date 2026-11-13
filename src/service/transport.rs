@@ -180,9 +180,12 @@ pub(crate) async fn light_power_on_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} light power state");
-        lan_dev.send_turn(on).await?;
-        poll_lan_api(state, lan_dev, |status| status.on == on).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_turn(on).await {
+            log::warn!("LAN light-power command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.on == on).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -581,11 +584,11 @@ pub(crate) async fn try_frame_capability(
 /// Send already-encoded base64 ptReal frames over the device's best transport,
 /// returning the wire that carried them. LAN first when the device is on the
 /// LAN: the LAN and IoT ptReal payloads carry identical base64 BLE frames, so
-/// this is a pure transport choice. LAN is fire-and-forget UDP with no ack, so
-/// there is no delivery failure to fall back from; a present lan_device commits
-/// us to LAN. Otherwise direct BLE when a BLE client and address are available:
-/// the same frame bytes, written to the GATT char with no ptReal wrapper. IoT
-/// on any BLE failure or when BLE is unavailable.
+/// this is a pure transport choice. LAN is fire-and-forget UDP with no device
+/// acknowledgement; only a local send error is safe to fall through from.
+/// Otherwise direct BLE when a BLE client and address are available: the same
+/// frame bytes, written to the GATT char with no ptReal wrapper. IoT on any BLE
+/// failure or when BLE is unavailable.
 async fn send_frames(
     state: &StateHandle,
     device: &Device,
