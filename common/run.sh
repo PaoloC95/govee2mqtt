@@ -122,6 +122,11 @@ if bashio::config.has_value availability_timeout ; then
   export GOVEE2MQTT_AVAILABILITY_TIMEOUT
 fi
 
+if bashio::config.has_value disable_one_click ; then
+  GOVEE2MQTT_DISABLE_ONE_CLICK="$(bashio::config disable_one_click)"
+  export GOVEE2MQTT_DISABLE_ONE_CLICK
+fi
+
 # log the resolved config with secrets redacted. this is diagnostic only, so it
 # must not abort startup: grep exits non-zero when nothing matches, and the
 # script runs under bashio's set -e, so swallow that.
