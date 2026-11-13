@@ -37,9 +37,12 @@ pub(crate) async fn power_on_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} power state");
-        lan_dev.send_turn(on).await?;
-        poll_lan_api(state, lan_dev, |status| status.on == on).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_turn(on).await {
+            log::warn!("LAN power command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.on == on).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)
@@ -214,9 +217,12 @@ pub(crate) async fn set_brightness_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} brightness");
-        lan_dev.send_brightness(percent).await?;
-        poll_lan_api(state, lan_dev, |status| status.brightness == percent).await?;
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_brightness(percent).await {
+            log::warn!("LAN brightness command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.brightness == percent).await?;
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)
@@ -256,16 +262,19 @@ pub(crate) async fn set_color_temperature_generic(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to set {device} color temperature");
-        lan_dev.send_color_temperature_kelvin(kelvin).await?;
-        poll_lan_api(state, lan_dev, |status| {
-            status.color_temperature_kelvin == kelvin
-        })
-        .await?;
-        state
-            .device_mut(&device.sku, &device.id)
-            .await
-            .set_active_scene(None);
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_color_temperature_kelvin(kelvin).await {
+            log::warn!("LAN color-temperature command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| {
+                status.color_temperature_kelvin == kelvin
+            })
+            .await?;
+            state
+                .device_mut(&device.sku, &device.id)
+                .await
+                .set_active_scene(None);
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -306,13 +315,16 @@ pub(crate) async fn set_color_rgb_generic(
     {
         let color = govee_api::lan_api::DeviceColor { r, g, b };
         log::debug!("Using LAN API to set {device} color");
-        lan_dev.send_color_rgb(color).await?;
-        poll_lan_api(state, lan_dev, |status| status.color == color).await?;
-        state
-            .device_mut(&device.sku, &device.id)
-            .await
-            .set_active_scene(None);
-        return Ok(Transport::Lan);
+        if let Err(err) = lan_dev.send_color_rgb(color).await {
+            log::warn!("LAN color command could not be sent to {device} ({err:#}); trying the next transport");
+        } else {
+            poll_lan_api(state, lan_dev, |status| status.color == color).await?;
+            state
+                .device_mut(&device.sku, &device.id)
+                .await
+                .set_active_scene(None);
+            return Ok(Transport::Lan);
+        }
     }
 
     if device.transport_reachable(Transport::Iot, &avail)
@@ -585,8 +597,10 @@ async fn send_frames(
         && let Some(lan_dev) = &device.lan_device
     {
         log::debug!("Using LAN API to send a ptReal frame to {device}");
-        lan_dev.send_real(frames).await?;
-        return Ok(Transport::Lan);
+        match lan_dev.send_real(frames.clone()).await {
+            Ok(()) => return Ok(Transport::Lan),
+            Err(err) => log::warn!("LAN frame could not be sent to {device} ({err:#}); trying the next transport"),
+        }
     }
 
     if device.transport_reachable(Transport::Ble, &avail)
