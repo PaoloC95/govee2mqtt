@@ -74,6 +74,17 @@ async fn enumerate_global_entities(
 /// registers, the existing scene configs are left alone, and the next
 /// successful pass restores them.
 async fn enumerate_scenes(state: &StateHandle, entities: &mut EntityList) -> anyhow::Result<bool> {
+    // Skip Govee's undocumented Community API entirely when One-Click scenes are disabled.
+    // Returning true marks enumeration complete, allowing HA to remove previously
+    // discovered One-Click scene entities while keeping all device entities intact.
+    if matches!(
+        std::env::var("GOVEE2MQTT_DISABLE_ONE_CLICK").as_deref(),
+        Ok("true" | "1" | "yes" | "on")
+    ) {
+        log::info!("One-Click scene discovery is disabled by configuration");
+        return Ok(true);
+    }
+
     let Some(undoc) = state.get_undoc_client().await else {
         return Ok(true);
     };
