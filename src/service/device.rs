@@ -1114,19 +1114,6 @@ impl Device {
         false
     }
 
-    /// Whether a transport can currently carry a command to this device, from
-    /// the device's facts and the sampled client availability. This is the one
-    /// definition of "is transport T usable"; the control cascade gates each
-    /// step on it, and the debug `effective_transports` display reads it, so the
-    /// two can't drift. LAN sends go over the device's own UDP socket (no shared
-    /// client), so it only needs `lan_device`; the rest need their client up.
-    ///
-    /// BLE needs an address, an adapter, AND a family that actually has codecs
-    /// for the SKU -- a bare address with no codecs (e.g. an unpinned H5083) is
-    /// not controllable. IoT needs `iot_api_supported`, the quirk flag every
-    /// socket and IoT-driven device sets. `avoid_platform_api` is not checked
-    /// here: the generic verbs use the platform API regardless of it, and only
-    /// the scene verb treats it as a routing preference.
     /// Whether LAN has failed to establish or maintain a usable status path.
     /// Before the first successful response, use the shorter startup grace
     /// period. After LAN has worked once, keep it preferred for the existing
@@ -1144,6 +1131,18 @@ impl Device {
         }
     }
 
+    /// Whether a transport can currently carry a command to this device, from
+    /// the device's facts and the sampled client availability. This is the one
+    /// definition of "is transport T usable"; the control cascade gates each
+    /// step on it, and the debug effective_transports display reads it, so the
+    /// two can't drift. LAN requires a recent valid status response; the other
+    /// transports require their client to be up.
+    /// BLE needs an address, an adapter, AND a family that actually has codecs
+    /// for the SKU -- a bare address with no codecs (e.g. an unpinned H5083) is
+    /// not controllable. IoT needs iot_api_supported, the quirk flag every
+    /// socket and IoT-driven device sets. avoid_platform_api is not checked
+    /// here: the generic verbs use the platform API regardless of it, and only
+    /// the scene verb treats it as a routing preference.
     pub fn transport_reachable(&self, transport: Transport, avail: &ClientAvail) -> bool {
         match transport {
             Transport::Lan => self.lan_device.is_some() && !self.lan_fallback_expired(),
