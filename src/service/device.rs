@@ -1123,10 +1123,11 @@ impl Device {
             return false;
         }
 
-        match self.last_lan_device_status_update {
+        match self.last_lan_device_status_update.as_ref() {
             Some(last_response) => Utc::now() - last_response >= availability_timeout(),
             None => self
                 .lan_first_seen_at
+                .as_ref()
                 .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout()),
         }
     }
