@@ -1127,17 +1127,21 @@ impl Device {
     /// socket and IoT-driven device sets. `avoid_platform_api` is not checked
     /// here: the generic verbs use the platform API regardless of it, and only
     /// the scene verb treats it as a routing preference.
-    /// True once a discovered LAN device has failed to provide its first
-    /// valid status response within the configured grace period. After a
-    /// device has answered LAN successfully at least once, this startup-only
-    /// gate no longer applies; the normal LAN freshness policy remains intact.
+    /// Whether LAN has failed to establish or maintain a usable status path.
+    /// Before the first successful response, use the shorter startup grace
+    /// period. After LAN has worked once, keep it preferred for the existing
+    /// availability window and only then allow cloud transports to take over.
     pub fn lan_fallback_expired(&self) -> bool {
-        if self.lan_device.is_none() || self.last_lan_device_status_update.is_some() {
+        if self.lan_device.is_none() {
             return false;
         }
 
-        self.lan_first_seen_at
-            .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout())
+        match self.last_lan_device_status_update {
+            Some(last_response) => Utc::now() - last_response >= availability_timeout(),
+            None => self
+                .lan_first_seen_at
+                .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout()),
+        }
     }
 
     pub fn transport_reachable(&self, transport: Transport, avail: &ClientAvail) -> bool {
