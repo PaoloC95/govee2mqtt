@@ -1,4 +1,4 @@
-use crate::commands::serve::{POLL_INTERVAL, availability_timeout};
+use crate::commands::serve::{POLL_INTERVAL, availability_timeout, lan_fallback_timeout};
 use crate::service::quirks::{BULB, Quirk, resolve_quirk};
 use crate::service::state::{ClientAvail, Transport};
 use chrono::{DateTime, Utc};
@@ -1123,9 +1123,22 @@ impl Device {
     /// socket and IoT-driven device sets. `avoid_platform_api` is not checked
     /// here: the generic verbs use the platform API regardless of it, and only
     /// the scene verb treats it as a routing preference.
+    /// True once a discovered LAN device has failed to provide its first
+    /// valid status response within the configured grace period. After a
+    /// device has answered LAN successfully at least once, this startup-only
+    /// gate no longer applies; the normal LAN freshness policy remains intact.
+    pub fn lan_fallback_expired(&self) -> bool {
+        if self.lan_device.is_none() || self.last_lan_device_status_update.is_some() {
+            return false;
+        }
+
+        self.last_lan_device_update
+            .is_some_and(|discovered| Utc::now() - discovered >= lan_fallback_timeout())
+    }
+
     pub fn transport_reachable(&self, transport: Transport, avail: &ClientAvail) -> bool {
         match transport {
-            Transport::Lan => self.lan_device.is_some(),
+            Transport::Lan => self.lan_device.is_some() && !self.lan_fallback_expired(),
             Transport::Ble => {
                 avail.ble
                     && self.ble_address().is_some()
