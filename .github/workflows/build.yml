@@ -42,6 +42,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.version.outputs.release_tag }}
       build_sha: ${{ steps.version.outputs.build_sha }}
+      addon_version: ${{ steps.addon_version.outputs.version }}
       daemon_tags: ${{ steps.daemon_meta.outputs.tags }}
       daemon_labels: ${{ steps.daemon_meta.outputs.labels }}
       daemon_annotations: ${{ steps.daemon_meta.outputs.annotations }}
@@ -49,6 +50,19 @@ jobs:
       addon_labels: ${{ steps.addon_meta.outputs.labels }}
       addon_annotations: ${{ steps.addon_meta.outputs.annotations }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Read add-on version
+        id: addon_version
+        run: |
+          version="$(sed -n 's/^version: "\(.*\)"/\1/p' addon-edge/config.yaml)"
+          if [ -z "$version" ]; then
+            echo "Unable to read version from addon-edge/config.yaml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Compute version facts for build.rs
         id: version
         env:
@@ -91,7 +105,7 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=raw,value=edge,enable=${{ github.event_name != 'release' }}
-            type=raw,value=0.1.6,enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=raw,value=${{ steps.addon_version.outputs.version }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
   daemon:
     needs: init
