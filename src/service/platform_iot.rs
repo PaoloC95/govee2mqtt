@@ -18,13 +18,19 @@ use crate::service::state::StateHandle;
 use anyhow::Context;
 use govee_api::http::from_json;
 use govee_api::platform_api::DeviceCapabilityKind;
-use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet as MqttPacket, QoS, Transport};
+use rumqttc::{
+    AsyncClient, Event, EventLoop, MqttOptions, NetworkOptions, Packet as MqttPacket, QoS,
+    Transport,
+};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
 
 const BROKER_HOST: &str = "mqtt.openapi.govee.com";
 const BROKER_PORT: u16 = 8883;
+// rumqttc's default is 5 seconds. Give the TLS + MQTT handshake more time while
+// diagnosing the Platform broker's repeated NetworkTimeout responses.
+const CONNECTION_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -67,9 +73,14 @@ pub async fn start_platform_iot(api_key: String, state: StateHandle) -> anyhow::
     mqtt_options.set_keep_alive(Duration::from_secs(60));
     mqtt_options.set_transport(Transport::tls_with_default_config());
 
-    let (client, eventloop) = AsyncClient::new(mqtt_options, 32);
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 32);
+    let mut network_options = NetworkOptions::new();
+    network_options.set_connection_timeout(CONNECTION_TIMEOUT_SECS);
+    eventloop.set_network_options(network_options);
 
-    log::info!("Connecting to platform MQTT {BROKER_HOST}:{BROKER_PORT}");
+    log::info!(
+        "Connecting to platform MQTT {BROKER_HOST}:{BROKER_PORT} (connection timeout: {CONNECTION_TIMEOUT_SECS}s)"
+    );
     tokio::spawn(async move {
         if let Err(err) = run_platform_iot(eventloop, state, client, api_key).await {
             log::error!("Platform MQTT loop failed: {err:#}");
