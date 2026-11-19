@@ -90,12 +90,20 @@ async fn run_platform_iot(
         let event = match eventloop.poll().await {
             Ok(event) => event,
             Err(err) => {
-                // rumqttc reconnects on the next poll.
+                // rumqttc reconnects on the next poll. Keep both the formatted
+                // error chain and Debug representation: the latter includes
+                // the concrete ConnectionError variant (e.g. timeout vs TLS/I/O).
                 log::warn!("Platform MQTT disconnected: {err:#}");
+                log::debug!("Platform MQTT connection error details: {err:?}");
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
         };
+
+        // This client has its own EventLoop, separate from the Home Assistant
+        // MQTT client. Log its packet flow so we can tell whether CONNECT gets
+        // a CONNACK, a broker rejection, or no response before the timeout.
+        log::debug!("Platform MQTT event: {event:?}");
 
         match event {
             Event::Incoming(MqttPacket::ConnAck(_)) => {
