@@ -71,7 +71,7 @@ fn setup_logger() {
     let utc_suffix = if tz == chrono_tz::UTC { "Z" } else { "" };
 
     env_logger::builder()
-        // A bit of boilerplate here to get timestamps printed in local time.
+        // A bit of boilerplate here and in the temporary rumqttc filter below.
         // <https://github.com/rust-cli/env_logger/issues/158>
         .format(move |buf, record| {
             use chrono::Utc;
@@ -90,6 +90,9 @@ fn setup_logger() {
             writeln!(buf, "] {}", record.args())
         })
         .filter_level(log::LevelFilter::Info)
+        // TEMPORARY: expose rumqttc's connection state while diagnosing the
+        // Platform MQTT timeout. Remove once the broker handshake is understood.
+        .filter_module("rumqttc", log::LevelFilter::Trace)
         .parse_env("RUST_LOG")
         .init();
 }
