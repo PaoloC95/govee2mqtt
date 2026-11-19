@@ -93,6 +93,11 @@ fn setup_logger() {
         // TEMPORARY: expose rumqttc's connection state while diagnosing the
         // Platform MQTT timeout. Remove once the broker handshake is understood.
         .filter_module("rumqttc", log::LevelFilter::Trace)
+        // Platform MQTT emits its packet events and detailed errors at DEBUG.
+        .filter_module(
+            "govee2mqtt::service::platform_iot",
+            log::LevelFilter::Debug,
+        )
         .parse_env("RUST_LOG")
         .init();
 }
