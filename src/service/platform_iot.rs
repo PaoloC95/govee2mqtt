@@ -22,6 +22,12 @@ use rumqttc::{
     AsyncClient, Event, EventLoop, MqttOptions, NetworkOptions, Packet as MqttPacket, QoS,
     Transport,
 };
+use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpStream, lookup_host};
+use tokio_rustls::TlsConnector;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -31,6 +37,8 @@ const BROKER_PORT: u16 = 8883;
 // rumqttc's default is 5 seconds. Give the TLS + MQTT handshake more time while
 // diagnosing the Platform broker's repeated NetworkTimeout responses.
 const CONNECTION_TIMEOUT_SECS: u64 = 30;
+const PROBE_STAGE_TIMEOUT_SECS: u64 = 12;
+const PROBE_RETRY_SECS: u64 = 15;
 
 #[derive(Deserialize, Debug)]
 #[allow(dead_code)]
@@ -63,6 +71,171 @@ struct EventState {
     message: Option<String>,
 }
 
+
+
+/// Independently exercise each stage of the Platform MQTT connection so a
+/// generic rumqttc NetworkTimeout can be narrowed to DNS, TCP, TLS, CONNECT,
+/// or CONNACK. Credentials are sent only over the verified TLS stream and
+/// are never included in diagnostic output.
+async fn probe_platform_mqtt(api_key: &str) -> anyhow::Result<()> {
+    log::info!("Platform MQTT diagnostic: resolving {BROKER_HOST}:{BROKER_PORT}");
+    let addresses: Vec<SocketAddr> = lookup_host((BROKER_HOST, BROKER_PORT))
+        .await
+        .context("DNS lookup failed for Platform MQTT broker")?
+        .collect();
+    let address = addresses
+        .first()
+        .copied()
+        .context("DNS lookup returned no Platform MQTT addresses")?;
+    log::info!("Platform MQTT diagnostic: DNS resolved to {address}");
+
+    log::info!("Platform MQTT diagnostic: opening TCP connection");
+    let tcp = tokio::time::timeout(
+        Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+        TcpStream::connect(address),
+    )
+    .await
+    .context("TCP connection timed out")?
+    .context("TCP connection failed")?;
+    log::info!("Platform MQTT diagnostic: TCP connected");
+
+    log::info!("Platform MQTT diagnostic: loading system CA certificates");
+    let native_certs = rustls_native_certs::load_native_certs();
+    let mut roots = RootCertStore::empty();
+    let mut accepted = 0usize;
+    for cert in native_certs.certs {
+        if roots.add(cert).is_ok() {
+            accepted += 1;
+        }
+    }
+    if accepted == 0 {
+        anyhow::bail!(
+            "TLS setup failed: no usable system CA certificates ({} load errors)",
+            native_certs.errors.len()
+        );
+    }
+    log::info!(
+        "Platform MQTT diagnostic: loaded {accepted} system CA certificates ({} load errors)",
+        native_certs.errors.len()
+    );
+
+    let tls_config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = TlsConnector::from(Arc::new(tls_config));
+    let server_name = ServerName::try_from(BROKER_HOST.to_owned())
+        .context("TLS server name is invalid")?;
+
+    log::info!("Platform MQTT diagnostic: starting TLS handshake");
+    let mut tls = tokio::time::timeout(
+        Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+        connector.connect(server_name, tcp),
+    )
+    .await
+    .context("TLS handshake timed out")?
+    .context("TLS handshake failed")?;
+    log::info!("Platform MQTT diagnostic: TLS handshake completed");
+
+    let client_id = format!("govee2mqtt-probe-{}", uuid::Uuid::new_v4().simple());
+    let packet = mqtt_connect_packet(&client_id, api_key);
+    log::info!("Platform MQTT diagnostic: sending MQTT 3.1.1 CONNECT");
+    tokio::time::timeout(
+        Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+        tls.write_all(&packet),
+    )
+    .await
+    .context("MQTT CONNECT write timed out")?
+    .context("MQTT CONNECT write failed")?;
+    tls.flush().await.context("MQTT CONNECT flush failed")?;
+
+    log::info!("Platform MQTT diagnostic: waiting for broker CONNACK");
+    let mut header = [0u8; 1];
+    tokio::time::timeout(
+        Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+        tls.read_exact(&mut header),
+    )
+    .await
+    .context("Broker did not answer MQTT CONNECT: CONNACK wait timed out")?
+    .context("Failed while reading MQTT response header")?;
+
+    let mut remaining_length = 0usize;
+    let mut multiplier = 1usize;
+    let mut encoded = [0u8; 1];
+    for _ in 0..4 {
+        tokio::time::timeout(
+            Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+            tls.read_exact(&mut encoded),
+        )
+        .await
+        .context("Timed out reading MQTT response length")?
+        .context("Failed while reading MQTT response length")?;
+        remaining_length += ((encoded[0] & 0x7f) as usize) * multiplier;
+        if encoded[0] & 0x80 == 0 {
+            break;
+        }
+        multiplier = multiplier.saturating_mul(128);
+    }
+    if remaining_length == 0 || remaining_length > 1024 {
+        anyhow::bail!(
+            "Unexpected MQTT response: packet type 0x{:02x}, remaining length {remaining_length}",
+            header[0] >> 4
+        );
+    }
+    let mut body = vec![0u8; remaining_length];
+    tokio::time::timeout(
+        Duration::from_secs(PROBE_STAGE_TIMEOUT_SECS),
+        tls.read_exact(&mut body),
+    )
+    .await
+    .context("Timed out reading MQTT response body")?
+    .context("Failed while reading MQTT response body")?;
+
+    if header[0] >> 4 != 2 || body.len() < 2 {
+        anyhow::bail!(
+            "Expected MQTT CONNACK, received packet type 0x{:02x}",
+            header[0] >> 4
+        );
+    }
+    let return_code = body[1];
+    if return_code != 0 {
+        anyhow::bail!(
+            "Govee broker rejected MQTT CONNECT with CONNACK return code {return_code}"
+        );
+    }
+    log::info!("Platform MQTT diagnostic: broker accepted MQTT CONNECT (CONNACK 0)");
+    Ok(())
+}
+
+fn mqtt_connect_packet(client_id: &str, api_key: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0xC2, 0x00, 0x3C]);
+    push_mqtt_string(&mut body, client_id);
+    push_mqtt_string(&mut body, api_key);
+    push_mqtt_string(&mut body, api_key);
+
+    let mut packet = vec![0x10];
+    let mut remaining = body.len();
+    loop {
+        let mut digit = (remaining % 128) as u8;
+        remaining /= 128;
+        if remaining > 0 {
+            digit |= 0x80;
+        }
+        packet.push(digit);
+        if remaining == 0 {
+            break;
+        }
+    }
+    packet.extend_from_slice(&body);
+    packet
+}
+
+fn push_mqtt_string(buffer: &mut Vec<u8>, value: &str) {
+    let bytes = value.as_bytes();
+    buffer.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    buffer.extend_from_slice(bytes);
+}
+
 pub async fn start_platform_iot(api_key: String, state: StateHandle) -> anyhow::Result<()> {
     // client_id has to be unique per connection; the broker is EMQX-backed and
     // disconnects duplicates.
@@ -82,6 +255,24 @@ pub async fn start_platform_iot(api_key: String, state: StateHandle) -> anyhow::
         "Connecting to platform MQTT {BROKER_HOST}:{BROKER_PORT} (connection timeout: {CONNECTION_TIMEOUT_SECS}s)"
     );
     tokio::spawn(async move {
+        loop {
+            match probe_platform_mqtt(&api_key).await {
+                Ok(()) => {
+                    log::info!(
+                        "Platform MQTT diagnostic succeeded; starting rumqttc client"
+                    );
+                    break;
+                }
+                Err(err) => {
+                    log::warn!("Platform MQTT diagnostic failed: {err:#}");
+                    log::info!(
+                        "Retrying Platform MQTT diagnostic in {PROBE_RETRY_SECS}s"
+                    );
+                    tokio::time::sleep(Duration::from_secs(PROBE_RETRY_SECS)).await;
+                }
+            }
+        }
+
         if let Err(err) = run_platform_iot(eventloop, state, client, api_key).await {
             log::error!("Platform MQTT loop failed: {err:#}");
         }

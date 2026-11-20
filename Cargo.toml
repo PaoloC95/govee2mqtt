@@ -18,6 +18,7 @@ tokio = { version = "1.52", features = [
     "rt-multi-thread",
     "rt",
     "net",
+    "io-util",
     "sync",
     "time",
     "signal",
@@ -46,6 +47,9 @@ p12 = "0.6.3"
 axum = { version = "0.8.9", features = ["ws"] }
 async-trait = "0.1.89"
 rumqttc = "0.25.1"
+rustls = "0.23.35"
+rustls-native-certs = "0.8.3"
+tokio-rustls = "0.26.4"
 thiserror = "2.0.18"
 btleplug = "0.12"
 futures-util = "0.3"
